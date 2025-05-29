@@ -1,0 +1,73 @@
+name: 'Terraform'
+
+on:
+  push:
+    branches: [ "main" ]
+    paths: 
+      - 'terraform-backend-setup/**'
+  pull_request:
+    branches: [ "main" ]
+    paths: 
+      - 'terraform-backend-setup/**'
+
+env:
+  AWS_REGION: "eu-north-1"
+  S3_BUCKET_NAME: "your-unique-terraform-state-bucket-name" # Replace with your unique bucket name
+  DYNAMODB_TABLE_NAME: "terraform-locks" # Replace if needed
+
+jobs:
+  terraform:
+    name: 'Terraform'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Needed for AWS OIDC auth
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ./terraform-backend-setup
+
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+        working-directory: ./terraform-backend-setup
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+        working-directory: ./terraform-backend-setup
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="s3_bucket_name=${{ env.S3_BUCKET_NAME }}" \
+            -var="dynamodb_table_name=${{ env.DYNAMODB_TABLE_NAME }}" \
+            -out=tfplan
+        working-directory: ./terraform-backend-setup
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome != 'success'
+        run: exit 1
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve tfplan
+        working-directory: ./terraform-backend-setup

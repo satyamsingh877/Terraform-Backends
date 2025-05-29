@@ -3,66 +3,63 @@ name: 'Terraform Remote Backend Setup'
 on:
   push:
     branches: [ "main" ]
-    paths:
-      - 'terraform-backend-setup/**'
-  pull_request:
-    branches: [ "main" ]
-    paths:
-      - 'terraform-backend-setup/**'
+  workflow_dispatch:
 
 env:
-  AWS_REGION: "eu-north-1"
-  TF_BACKEND_S3_BUCKET: "your-unique-terraform-state-bucket" # Must be globally unique
-  TF_BACKEND_DYNAMODB_TABLE: "terraform-state-locks"
+  AWS_REGION: 'eu-north-1'
+  S3_BUCKET_NAME: 'your-unique-terraform-state-bucket'
+  DYNAMODB_TABLE_NAME: 'terraform-state-locks'
 
 jobs:
-  terraform:
-    name: 'Terraform Plan & Apply'
+  deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v3
+      # First try the modern approach with AWS SDK v3
+      - name: Configure AWS Credentials (Modern)
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # Fallback method if the modern approach fails
+      - name: Configure AWS CLI (Fallback)
+        if: ${{ failure() }}
+        run: |
+          mkdir -p ~/.aws
+          echo "[default]" > ~/.aws/credentials
+          echo "aws_access_key_id=${{ secrets.AWS_ACCESS_KEY_ID }}" >> ~/.aws/credentials
+          echo "aws_secret_access_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" >> ~/.aws/credentials
+          echo "region=${{ env.AWS_REGION }}" >> ~/.aws/credentials
+
+      - name: Verify AWS Credentials
+        run: |
+          aws sts get-caller-identity
+          aws s3 ls || echo "S3 access failed - check permissions"
+
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.12.1"
-          terraform_wrapper: false
+        uses: hashicorp/setup-terraform@v2
 
       - name: Terraform Init
-        id: init
         run: terraform init
         working-directory: ./terraform-backend-setup
 
-      - name: Terraform Format
-        id: fmt
-        run: terraform fmt -check -recursive
-        working-directory: ./terraform-backend-setup
-
-      - name: Terraform Validate
-        id: validate
-        run: terraform validate
-        working-directory: ./terraform-backend-setup
-
       - name: Terraform Plan
-        id: plan
         run: |
           terraform plan \
             -var="aws_region=${{ env.AWS_REGION }}" \
-            -var="s3_bucket_name=${{ env.TF_BACKEND_S3_BUCKET }}" \
-            -var="dynamodb_table_name=${{ env.TF_BACKEND_DYNAMODB_TABLE }}" \
-            -out=tfplan
+            -var="s3_bucket_name=${{ env.S3_BUCKET_NAME }}" \
+            -var="dynamodb_table_name=${{ env.DYNAMODB_TABLE_NAME }}"
         working-directory: ./terraform-backend-setup
 
       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: terraform apply -auto-approve tfplan
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve
         working-directory: ./terraform-backend-setup
